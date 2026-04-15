@@ -18,7 +18,7 @@ The frontend should be deployed on vercel. If backend functions are needed you c
 
 You should never send an email automatically.
 
-The use should approve with one button click.
+The user should approve with one button click.
 
 Implement authentication so that only the owner of the email has access.
 

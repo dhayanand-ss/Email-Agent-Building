@@ -57,15 +57,12 @@ export async function GET() {
       }
     );
 
-    // Sync fetched emails into Supabase (skip duplicates via unique constraint)
+    // Sync only reference data into Supabase (no email content stored)
     if (emails.length > 0) {
       const { error: upsertError } = await supabase.from("emails").upsert(
         emails.map((e) => ({
           gmail_thread_id: e.gmail_thread_id,
           gmail_message_id: e.gmail_message_id,
-          sender: e.sender,
-          subject: e.subject,
-          body: e.body,
           received_at: e.received_at,
           status: "pending",
         })),
@@ -73,7 +70,7 @@ export async function GET() {
       );
 
       if (upsertError) {
-        console.error("Failed to sync emails:", upsertError.message);
+        console.error("Failed to sync email refs:", upsertError.message);
       }
     }
 

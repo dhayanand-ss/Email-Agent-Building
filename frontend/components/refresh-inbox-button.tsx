@@ -1,48 +1,35 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
 export function RefreshInboxButton() {
   const router = useRouter();
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+  const [refreshed, setRefreshed] = useState(false);
 
-  async function handleRefresh() {
-    setLoading(true);
-    setMessage(null);
-
-    try {
-      const res = await fetch("/api/gmail/emails");
-      const data = await res.json();
-
-      if (!res.ok) {
-        setMessage(data.error ?? "Failed to refresh inbox.");
-      } else {
-        setMessage(`Synced ${data.count} email(s).`);
-        router.refresh();
-      }
-    } catch {
-      setMessage("Network error. Please try again.");
-    } finally {
-      setLoading(false);
-    }
+  function handleRefresh() {
+    setRefreshed(false);
+    startTransition(() => {
+      router.refresh();
+      setRefreshed(true);
+    });
   }
 
   return (
     <div className="flex items-center gap-3">
-      {message && (
-        <span className="text-sm text-gray-500">{message}</span>
+      {refreshed && !isPending && (
+        <span className="text-sm text-gray-500">Refreshed.</span>
       )}
       <Button
         variant="outline"
         onClick={handleRefresh}
-        disabled={loading}
+        disabled={isPending}
         className="gap-2"
       >
         <svg
-          className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
+          className={`h-4 w-4 ${isPending ? "animate-spin" : ""}`}
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -54,7 +41,7 @@ export function RefreshInboxButton() {
             d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
           />
         </svg>
-        {loading ? "Refreshing…" : "Refresh Inbox"}
+        {isPending ? "Refreshing…" : "Refresh Inbox"}
       </Button>
     </div>
   );

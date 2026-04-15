@@ -8,6 +8,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { fetchEmailContent } from "@/lib/gmail";
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
 
@@ -26,15 +27,57 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "emailId is required" }, { status: 400 });
   }
 
-  // Load the email
-  const { data: email, error: emailError } = await supabase
-    .from("emails")
-    .select("*")
-    .eq("id", emailId)
-    .single();
+  // Load the email reference and Gmail tokens in parallel
+  const [{ data: emailRef, error: emailError }, { data: tokenRow, error: tokenError }] =
+    await Promise.all([
+      supabase
+        .from("emails")
+        .select("id, gmail_message_id")
+        .eq("id", emailId)
+        .single(),
+      supabase
+        .from("gmail_tokens")
+        .select("access_token, refresh_token, expiry_date")
+        .eq("user_id", user.id)
+        .single(),
+    ]);
 
-  if (emailError || !email) {
+  if (emailError || !emailRef) {
     return NextResponse.json({ error: "Email not found" }, { status: 404 });
+  }
+  if (tokenError || !tokenRow) {
+    return NextResponse.json({ error: "Gmail not connected" }, { status: 400 });
+  }
+
+  // Fetch email content from Gmail
+  let email: { sender: string; subject: string; body: string };
+  try {
+    const fetched = await fetchEmailContent(
+      {
+        access_token: tokenRow.access_token,
+        refresh_token: tokenRow.refresh_token,
+        expiry_date: tokenRow.expiry_date,
+      },
+      emailRef.gmail_message_id,
+      (refreshed) => {
+        supabase
+          .from("gmail_tokens")
+          .update({
+            ...(refreshed.access_token && { access_token: refreshed.access_token }),
+            ...(refreshed.refresh_token && { refresh_token: refreshed.refresh_token }),
+            ...(refreshed.expiry_date && { expiry_date: refreshed.expiry_date }),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", user.id)
+          .then(({ error }) => {
+            if (error) console.error("Failed to persist refreshed token:", error.message);
+          });
+      }
+    );
+    email = { sender: fetched.sender, subject: fetched.subject, body: fetched.body };
+  } catch (err) {
+    console.error("Failed to fetch email content:", err);
+    return NextResponse.json({ error: "Failed to fetch email from Gmail" }, { status: 502 });
   }
 
   try {
@@ -96,7 +139,7 @@ Write a professional, helpful, and concise reply email to this customer.
 - Sign off as "The Vizuara Team".`;
 
     const generationModel = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-flash",
     });
     const result = await generationModel.generateContent(prompt);
     const draft = result.response.text().trim();

@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import ReplySection from "@/components/reply-section";
+import { fetchEmailContent } from "@/lib/gmail";
 
 export default async function EmailDetailPage({
   params,
@@ -11,18 +12,81 @@ export default async function EmailDetailPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const [{ data: email }, { data: existingReply }] = await Promise.all([
-    supabase.from("emails").select("*").eq("id", id).single(),
-    supabase
-      .from("replies")
-      .select("id, ai_draft, sent_reply, sent_at")
-      .eq("email_id", id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-  ]);
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  if (!email) notFound();
+  if (!user) notFound();
+
+  const [{ data: emailRef }, { data: existingReply }, { data: tokenRow }] =
+    await Promise.all([
+      supabase
+        .from("emails")
+        .select("id, gmail_message_id, gmail_thread_id, status, received_at")
+        .eq("id", id)
+        .single(),
+      supabase
+        .from("replies")
+        .select("id, ai_draft, sent_reply, sent_at")
+        .eq("email_id", id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("gmail_tokens")
+        .select("access_token, refresh_token, expiry_date")
+        .eq("user_id", user.id)
+        .single(),
+    ]);
+
+  if (!emailRef || !tokenRow) notFound();
+
+  // Fetch email content from Gmail (not stored in Supabase)
+  let emailContent: { sender: string; subject: string; body: string } = {
+    sender: "",
+    subject: "(No subject)",
+    body: "",
+  };
+  try {
+    const fetched = await fetchEmailContent(
+      {
+        access_token: tokenRow.access_token,
+        refresh_token: tokenRow.refresh_token,
+        expiry_date: tokenRow.expiry_date,
+      },
+      emailRef.gmail_message_id,
+      (refreshed) => {
+        supabase
+          .from("gmail_tokens")
+          .update({
+            ...(refreshed.access_token && { access_token: refreshed.access_token }),
+            ...(refreshed.refresh_token && { refresh_token: refreshed.refresh_token }),
+            ...(refreshed.expiry_date && { expiry_date: refreshed.expiry_date }),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", user.id)
+          .then(({ error }) => {
+            if (error) console.error("Failed to persist refreshed token:", error.message);
+          });
+      }
+    );
+    emailContent = {
+      sender: fetched.sender,
+      subject: fetched.subject,
+      body: fetched.body,
+    };
+  } catch (err) {
+    console.error("Failed to fetch email content from Gmail:", err);
+  }
+
+  const email = {
+    id: emailRef.id,
+    gmail_message_id: emailRef.gmail_message_id,
+    gmail_thread_id: emailRef.gmail_thread_id,
+    status: emailRef.status,
+    received_at: emailRef.received_at,
+    ...emailContent,
+  };
 
   const receivedAt = email.received_at
     ? new Date(email.received_at).toLocaleString()
@@ -73,9 +137,15 @@ export default async function EmailDetailPage({
         </dl>
 
         <div className="border-t pt-4">
-          <p className="whitespace-pre-wrap text-sm text-gray-800 leading-relaxed">
-            {email.body || "(No body)"}
-          </p>
+          <div
+            className="whitespace-pre-wrap text-sm text-gray-800 leading-relaxed [&_a]:text-blue-600 [&_a]:underline [&_a]:break-all"
+            dangerouslySetInnerHTML={{
+              __html: (email.body || "(No body)").replace(
+                /(?:<?\[?\[?)(https?:\/\/[^\s\]>]+)(?:\]?\]?>?)/g,
+                '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+              ),
+            }}
+          />
         </div>
       </div>
 

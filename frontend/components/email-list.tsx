@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 interface Email {
-  id: number;
+  id: number | undefined;
+  gmail_message_id?: string;
   sender: string;
   subject: string | null;
   received_at: string | null;
@@ -49,9 +50,9 @@ export function EmailList({ emails }: { emails: Email[] }) {
     <div className="overflow-hidden rounded-xl border bg-white">
       <ul className="divide-y">
         {emails.map((email) => (
-          <li key={email.id}>
+          <li key={email.gmail_message_id ?? email.id}>
             <Link
-              href={`/dashboard/emails/${email.id}`}
+              href={email.id ? `/dashboard/emails/${email.id}` : "#"}
               className="flex items-center gap-4 px-5 py-4 hover:bg-gray-50 transition-colors"
             >
               {/* Sender avatar */}

@@ -45,8 +45,8 @@ An AI-powered email reply agent for Gmail that fetches emails, drafts replies us
 
 ### `emails`
 - `id`, `gmail_thread_id`, `gmail_message_id`
-- `sender`, `subject`, `body`, `received_at`
-- `status` (pending | approved | sent)
+- `received_at`, `status` (pending | approved | sent)
+- **No email content stored** — sender/subject/body are fetched from Gmail API on demand
 
 ### `replies`
 - `id`, `email_id` (FK)

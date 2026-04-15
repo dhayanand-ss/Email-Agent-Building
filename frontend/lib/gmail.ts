@@ -59,25 +59,66 @@ export function buildGmailClient(
 
 // ── Message parsing ───────────────────────────────────────────────────────────
 
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/tr>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function decodeBodyData(data: string): string {
+  return Buffer.from(data, "base64url").toString("utf-8");
+}
+
+function findPart(
+  payload: gmail_v1.Schema$MessagePart,
+  mimeType: string
+): gmail_v1.Schema$MessagePart | undefined {
+  if (payload.mimeType === mimeType && payload.body?.data) return payload;
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      const found = findPart(part, mimeType);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 function extractBody(payload: gmail_v1.Schema$MessagePart | undefined): string {
   if (!payload) return "";
 
-  // Inline body data (non-multipart)
-  if (payload.body?.data) {
-    return Buffer.from(payload.body.data, "base64url").toString("utf-8");
+  // Prefer text/plain
+  const plainPart = findPart(payload, "text/plain");
+  if (plainPart?.body?.data) {
+    return decodeBodyData(plainPart.body.data);
   }
 
-  if (payload.parts) {
-    // Prefer plain text part
-    const textPart = payload.parts.find((p) => p.mimeType === "text/plain");
-    if (textPart?.body?.data) {
-      return Buffer.from(textPart.body.data, "base64url").toString("utf-8");
+  // Fall back to text/html, stripped to plain text
+  const htmlPart = findPart(payload, "text/html");
+  if (htmlPart?.body?.data) {
+    return stripHtml(decodeBodyData(htmlPart.body.data));
+  }
+
+  // Last resort: inline body (could be either)
+  if (payload.body?.data) {
+    const raw = decodeBodyData(payload.body.data);
+    if (raw.includes("<html") || raw.includes("<div") || raw.includes("<table")) {
+      return stripHtml(raw);
     }
-    // Recurse into sub-parts (e.g. multipart/alternative inside multipart/mixed)
-    for (const part of payload.parts) {
-      const text = extractBody(part);
-      if (text) return text;
-    }
+    return raw;
   }
 
   return "";
@@ -93,6 +134,84 @@ export interface EmailSummary {
   body: string;
   snippet: string;
   received_at: string; // ISO string
+}
+
+// ── Single email fetchers ──────────────────────────────────────────────────────
+
+/** Fetch full content (headers + body) for a single message. */
+export async function fetchEmailContent(
+  tokens: StoredTokens,
+  messageId: string,
+  onTokenRefresh?: (refreshed: Partial<StoredTokens>) => void
+): Promise<EmailSummary> {
+  const gmail = buildGmailClient(tokens, onTokenRefresh);
+
+  const msgRes = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "full",
+  });
+
+  const data = msgRes.data;
+  const headers = data.payload?.headers ?? [];
+  const getHeader = (name: string) =>
+    headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
+      ?.value ?? "";
+
+  const dateStr = getHeader("Date");
+  let received_at: string;
+  try {
+    received_at = new Date(dateStr).toISOString();
+  } catch {
+    received_at = new Date().toISOString();
+  }
+
+  return {
+    gmail_message_id: messageId,
+    gmail_thread_id: data.threadId!,
+    sender: getHeader("From"),
+    subject: getHeader("Subject") || "(No subject)",
+    body: extractBody(data.payload ?? undefined),
+    snippet: data.snippet ?? "",
+    received_at,
+  };
+}
+
+/** Fetch only headers (no body) for a single message — faster than full fetch. */
+export async function fetchEmailMetadata(
+  tokens: StoredTokens,
+  messageId: string,
+  onTokenRefresh?: (refreshed: Partial<StoredTokens>) => void
+): Promise<{ sender: string; subject: string; received_at: string; gmail_thread_id: string }> {
+  const gmail = buildGmailClient(tokens, onTokenRefresh);
+
+  const msgRes = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "metadata",
+    metadataHeaders: ["From", "Subject", "Date"],
+  });
+
+  const data = msgRes.data;
+  const headers = data.payload?.headers ?? [];
+  const getHeader = (name: string) =>
+    headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
+      ?.value ?? "";
+
+  const dateStr = getHeader("Date");
+  let received_at: string;
+  try {
+    received_at = new Date(dateStr).toISOString();
+  } catch {
+    received_at = new Date().toISOString();
+  }
+
+  return {
+    gmail_thread_id: data.threadId!,
+    sender: getHeader("From"),
+    subject: getHeader("Subject") || "(No subject)",
+    received_at,
+  };
 }
 
 // ── Inbox fetcher ─────────────────────────────────────────────────────────────
